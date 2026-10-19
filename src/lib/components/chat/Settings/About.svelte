@@ -64,7 +64,11 @@
 			title={`${$WEBUI_NAME} ${$i18n.t('settings.personal.about.sections.version.title')}`}
 			first
 		>
-			<UserSettingRow description={$i18n.t('settings.personal.about.seeWhatSNew.description')}>
+			<UserSettingRow
+				description={$config?.features?.enable_version_update_check
+					? $i18n.t('settings.personal.about.seeWhatSNew.description')
+					: ''}
+			>
 				<div slot="label" class="flex flex-col text-xs text-gray-600 dark:text-gray-400">
 					<div class="flex flex-wrap gap-1">
 						<BuildVersion />
@@ -87,14 +91,16 @@
 						{/if}
 					</div>
 
-					<button
-						class="self-start {actionButtonClass}"
-						on:click={() => {
-							showChangelog.set(true);
-						}}
-					>
-						<div>{$i18n.t('settings.personal.about.seeWhatSNew.label')}</div>
-					</button>
+					{#if $config?.features?.enable_version_update_check}
+						<button
+							class="self-start {actionButtonClass}"
+							on:click={() => {
+								showChangelog.set(true);
+							}}
+						>
+							<div>{$i18n.t('settings.personal.about.seeWhatSNew.label')}</div>
+						</button>
+					{/if}
 				</div>
 
 				{#if WEBUI_BUILD_CHANNEL === 'main' && $config?.features?.enable_version_update_check}
@@ -132,7 +138,7 @@
 					{$i18n.t('license purchased by')}
 					<span class="capitalize">{$config?.license_metadata?.organization_name}</span>
 				</div>
-			{:else}
+			{:else if $config?.features?.enable_community_sharing}
 				<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400 dark:text-gray-600">
 					<a
 						class="hover:text-gray-700 dark:hover:text-gray-400"

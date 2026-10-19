@@ -1,0 +1,109 @@
+/* SnowCrash palette, loaded by the existing /static/custom.css link.
+ * Source: static/static/custom.css; synchronize with generate-assets.py.
+ */
+:root {
+	--sc-navy: #0f1729;
+	--sc-red: #e5322b;
+	--sc-gray: #6e7787;
+	--color-gray-500: var(--sc-gray);
+	--color-gray-900: var(--sc-navy);
+	--color-gray-950: #0a1020;
+	--color-blue-500: var(--sc-red);
+	--color-blue-600: #c52721;
+	--color-blue-700: #a8201b;
+	accent-color: var(--sc-red);
+}
+
+/* Theme settings also set inline gray values; keep SnowCrash surfaces stable. */
+html.dark {
+	--color-gray-800: #263249 !important;
+	--color-gray-850: #1b263c !important;
+	--color-gray-900: var(--sc-navy) !important;
+	--color-gray-950: #0a1020 !important;
+}
+
+::selection {
+	background: #e5322b33;
+}
+
+:focus-visible {
+	outline: 2px solid var(--sc-red);
+	outline-offset: 3px;
+}
+
+/* Keep the chat header recognizable in both light and dark themes. */
+nav.drag-region {
+	background: var(--sc-navy);
+	border-bottom: 2px solid var(--sc-red);
+	color: white;
+}
+
+nav.drag-region :is(button, a, [role='combobox']) {
+	color: white;
+}
+
+nav.drag-region :is(button, a):hover {
+	background-color: #ffffff1a;
+}
+
+#navbar-bg-gradient-to-b {
+	background: none;
+}
+
+thead {
+	background: var(--sc-navy);
+	color: white;
+}
+
+thead th {
+	color: white;
+}
+
+#auth-page > div:first-child,
+#splash-screen {
+	background: var(--sc-navy) !important;
+}
+
+#auth-login-card {
+	background: white;
+	color: var(--sc-navy);
+	border-top: 3px solid var(--sc-red);
+	border-radius: 1rem;
+	padding: 2rem;
+}
+
+#auth-login-card::before {
+	content: '';
+	display: block;
+	width: 4rem;
+	height: 4rem;
+	margin: 0 auto 1.25rem;
+	background: url('/static/favicon.svg') center / contain no-repeat;
+}
+
+html.dark #auth-login-card {
+	background: #1b263c;
+	color: white;
+}
+
+#auth-page #logo {
+	filter: none;
+}
+
+#oidc-login-button,
+#send-message-button:not(:disabled) {
+	background: var(--sc-red);
+	color: white;
+	font-weight: 600;
+}
+
+#oidc-login-button:hover,
+#send-message-button:not(:disabled):hover {
+	background: #c52721;
+}
+
+@media (max-width: 480px) {
+	#auth-login-card {
+		padding: 1.5rem;
+	}
+}

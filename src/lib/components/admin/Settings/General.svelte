@@ -167,15 +167,17 @@
 							{/if}
 						</div>
 
-						<button
-							class="mt-0.5 text-xs text-gray-400 transition-colors hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
-							type="button"
-							on:click={() => {
-								showChangelog.set(true);
-							}}
-						>
-							{$i18n.t('settings.admin.general.seeWhatSNew.label')}
-						</button>
+						{#if $config?.features?.enable_version_update_check}
+							<button
+								class="mt-0.5 text-xs text-gray-400 transition-colors hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
+								type="button"
+								on:click={() => {
+									showChangelog.set(true);
+								}}
+							>
+								{$i18n.t('settings.admin.general.seeWhatSNew.label')}
+							</button>
+						{/if}
 					</div>
 
 					{#if WEBUI_BUILD_CHANNEL === 'main' && $config?.features?.enable_version_update_check}

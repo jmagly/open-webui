@@ -389,7 +389,11 @@
 		};
 		setupKeyboardShortcuts();
 
-		if ($user?.role === 'admin' && ($settings?.showChangelog ?? true)) {
+		if (
+			$config?.features?.enable_version_update_check &&
+			$user?.role === 'admin' &&
+			($settings?.showChangelog ?? true)
+		) {
 			showChangelog.set($settings?.version !== $config.version);
 		}
 
@@ -465,7 +469,9 @@
 </script>
 
 <SettingsModal bind:show={$showSettings} />
-<ChangelogModal bind:show={$showChangelog} />
+{#if $config?.features?.enable_version_update_check}
+	<ChangelogModal bind:show={$showChangelog} />
+{/if}
 
 {#if WEBUI_BUILD_CHANNEL === 'main' && version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
 	<div class=" absolute bottom-8 right-8 z-50" in:fade={{ duration: 100 }}>

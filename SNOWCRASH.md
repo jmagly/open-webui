@@ -1,4 +1,4 @@
-# Per-user upstream model catalogs
+# SnowCrash chat and per-user upstream model catalogs
 
 This opt-in patch targets Open WebUI v0.12.3, upstream base `91ea4e342`, on
 `snowcrash/user-model-catalog`. It adds `model_catalog_scope: "user"` to an
@@ -51,96 +51,196 @@ Backend authorization does not depend on the displayed list.
 Connections without this field retain the normal catalog/cache and authentication
 behavior. The fail-closed OAuth path is enabled by the connection opt-in.
 
-## Configuration
+## SnowCrash UI and deployment configuration
 
-Apply the following environment from the integration design:
+This fork presents SnowCrash to customers, prospects and staff. The supplied
+logo is preserved in `static/static/snowcrash-logo.svg`. Small derived icons use
+navy `#0F1729`, red `#E5322B` and white. `static/static/custom.css` is the theme
+source, using Open WebUI's existing `/static/custom.css` hook. It sets navy chat
+headers and table headers, red buttons/focus accents and neutral gray `#6E7787`,
+with light/dark login cards. No theme loader or CSS environment setting is needed.
+The source does not provide a general custom-CSS env variable; the static hook
+already exists in `src/app.html`.
+
+### Phase A: shared connection now
+
+The complete, secret-free env block is
+[`deploy/snowcrash/phase-a.env.example`](deploy/snowcrash/phase-a.env.example).
+Load that file into the OWUI container and supply the existing `OPENAI_API_KEY`,
+`OAUTH_CLIENT_SECRET`, stable `WEBUI_SECRET_KEY` and stable
+`OAUTH_SESSION_TOKEN_ENCRYPTION_KEY` from the protected deployment env file.
+The example intentionally does not assign `OPENAI_API_KEY`, so it cannot erase
+the supplied key. `OPENAI_API_KEYS=` falls back to that singular key.
+
+Key phase-specific settings (the linked file contains the entire block):
 
 ```dotenv
-WEBUI_URL=https://chat.snowcrashlabs.com
-WEBUI_AUTH=true
-ENABLE_LOGIN_FORM=false
-ENABLE_SIGNUP=false
-ENABLE_OAUTH_SIGNUP=true
-DEFAULT_USER_ROLE=user
+OPENAI_API_BASE_URL=http://sc:8000/v1
+OPENAI_API_BASE_URLS=http://sc:8000/v1
+OPENAI_API_KEYS=
+OPENAI_API_CONFIGS={"0":{"enable":true,"auth_type":"bearer","model_ids":[],"headers":{},"forward_cookies":false}}
+BYPASS_MODEL_ACCESS_CONTROL=true
+DEFAULT_MODELS=quorum:auto
+OAUTH_SCOPES=openid email profile snowcrash-customer-claims
+ENABLE_OAUTH_ROLE_MANAGEMENT=false
+```
 
-OAUTH_CLIENT_ID=snowcrash-chat
-OPENID_PROVIDER_URL=https://auth.snowcrashlabs.com/realms/snowcrash-customers/.well-known/openid-configuration
-OPENID_REDIRECT_URI=https://chat.snowcrashlabs.com/oauth/oidc/login/callback
+The customers-realm client remains `snowcrash-chat`. Role management is left off
+in A so existing customers do not depend on the new `owui_roles` mapper. Existing
+OWUI administrator assignments remain effective; new users get role `user`.
+Keycloak owns the prospect email-link and workforce password sign-in flows;
+the OWUI login page has one **Sign in with SnowCrash** button. Auto-redirect is
+false to keep that button visible. The other built-in OAuth providers, LDAP,
+local password login/change, signup and initial local-admin signup are disabled.
+
+Phase A discovers the shared credential's SC catalog. It does **not** provide
+per-user SC identity, tenant isolation or individual $5 accounting. SC enforces
+the shared key's tenant/model/budget policy. Use the later phase for the
+per-prospect/user $5 monthly limit; OWUI UI permissions do not enforce spending.
+Do not enable trusted user headers as a substitute for the designed token path.
+
+### Phase B: per-user token forwarding later
+
+The complete env block is
+[`deploy/snowcrash/phase-b.env.example`](deploy/snowcrash/phase-b.env.example).
+Replace A with B; do not layer their conflicting connection settings. Remove the
+shared SC secret from the deployment env file and supply only the stable OWUI
+and OAuth secrets listed above. B explicitly clears both OpenAI key variables.
+
+```dotenv
+OPENAI_API_BASE_URL=http://sc:8000/v1
+OPENAI_API_BASE_URLS=http://sc:8000/v1
+OPENAI_API_KEY=
+OPENAI_API_KEYS=
+OPENAI_API_CONFIGS={"0":{"enable":true,"auth_type":"system_oauth","model_catalog_scope":"user","model_ids":[],"headers":{},"forward_cookies":false}}
+BYPASS_MODEL_ACCESS_CONTROL=false
+DEFAULT_MODELS=quorum:auto
 OAUTH_SCOPES=openid email profile snowcrash-customer-claims snowcrash-inference
-OAUTH_CODE_CHALLENGE_METHOD=S256
-OAUTH_TOKEN_ENDPOINT_AUTH_METHOD=client_secret_basic
-OAUTH_AUTO_REDIRECT=true
-
 ENABLE_OAUTH_ROLE_MANAGEMENT=true
 OAUTH_ROLES_CLAIM=owui_roles
 OAUTH_ALLOWED_ROLES=owui-user,owui-admin
 OAUTH_ADMIN_ROLES=owui-admin
-ENABLE_OAUTH_GROUP_MANAGEMENT=false
-ENABLE_OAUTH_GROUP_CREATION=false
-OAUTH_MERGE_ACCOUNTS_BY_EMAIL=false
-ENABLE_OAUTH_EMAIL_FALLBACK=false
-ENABLE_OAUTH_ID_TOKEN_COOKIE=false
-
-ENABLE_OPENAI_API=true
-OPENAI_API_BASE_URLS=http://sc:8000/v1
-OPENAI_API_KEY=
-OPENAI_API_KEYS=
-ENABLE_OLLAMA_API=false
-ENABLE_DIRECT_CONNECTIONS=false
-ENABLE_FUNCTIONS=false
-ENABLE_EVALUATION_ARENA_MODELS=false
-
-BYPASS_MODEL_ACCESS_CONTROL=false
-BYPASS_ADMIN_ACCESS_CONTROL=false
-ENABLE_FORWARD_USER_INFO_HEADERS=false
-ENABLE_BASE_MODELS_CACHE=false
-
-WEBUI_AUTH_COOKIE_SECURE=true
-WEBUI_SESSION_COOKIE_SECURE=true
-ENABLE_OAUTH_PERSISTENT_CONFIG=false
-RESET_CONFIG_ON_START=false
-
-TASK_MODEL=
-TASK_MODEL_EXTERNAL=
 ```
 
-Supply `OAUTH_CLIENT_SECRET`, a stable `WEBUI_SECRET_KEY` and a stable
-`OAUTH_SESSION_TOKEN_ENCRYPTION_KEY` through the deployment secret mechanism.
-Forward an access token with the configured SC audience/scope; an ID token or
-OWUI session token is not an inference credential.
+Enable B only after the design's customers-realm brokers, protected origin claims,
+SC audience/scope, access-token authentication and identity/tenant bindings are
+verified. Issue `owui-user` to ordinary users and `owui-admin` only to designated
+chat administrators. `platform-operator` alone grants no OWUI administrator role.
+Tokens need audience `snowcrash-sc-inference`; ID tokens and OWUI session tokens
+are not SC inference credentials. SC remains responsible for each user's current
+catalog and $5 Walkup tenant/user caps, including existing prospect snapshots.
+No live Keycloak or SC changes are made by this patch.
 
-Set the effective connection JSON (persisted configuration takes precedence
-over environment defaults):
+### Effective settings on an existing installation
 
-```json
-{
-	"openai.api_base_urls": ["http://sc:8000/v1"],
-	"openai.api_keys": [""],
-	"openai.api_configs": {
-		"0": {
-			"enable": true,
-			"auth_type": "system_oauth",
-			"model_ids": [],
-			"headers": {},
-			"forward_cookies": false,
-			"model_catalog_scope": "user"
-		}
-	}
-}
+Both complete files set `ENABLE_PERSISTENT_CONFIG=false` and
+`ENABLE_OAUTH_PERSISTENT_CONFIG=false`. This deployment-managed mode makes the
+env defaults effective even when older config rows exist. It does not delete the
+database; `RESET_CONFIG_ON_START=false`. Admin changes to persistent config are
+not effective in this mode. Supply phase vars through the container environment
+(or Compose `env_file`), not by merely placing a file in the repository. Remove
+conflicting explicit Compose `environment` entries and old plural connection/key
+variables; those can override an env file.
+
+If persistent config is intentionally re-enabled, reconcile the effective rows
+before opening access: `openai.api_base_urls`, `openai.api_keys`,
+`openai.api_configs`, `ui.default_models`, `ui.default_pinned_models`,
+`ui.model_order_list`, `ui.default_interface_settings`, `user.permissions` and
+all feature rows corresponding to the env switches. Use `/openai/config`,
+`/api/config` and the administrator settings UI to verify the effective result.
+Keep exactly one SC connection, empty `model_ids`, empty headers and no prefix.
+Remove every stale `fleet:*` manual ID, preset, pin, group/default model list or
+saved user default. The current router ID is **`quorum:auto`**, not `fleet:auto`.
+Old chats keep their history; choose an available current ID before continuing.
+A vanished per-user selection remains blank rather than choosing another model.
+
+Normal users have no workspace/model creation, tools/functions marketplace,
+arena/rating, personal connections, web search, images, code execution/interpreter,
+API keys, channels, apps, calendar, automations, notes, memories or webhooks.
+Chat history, deletion/export, file attachments, folders and personal interface
+settings remain available. Follow-up/tag generation and multiple-model chat are
+off to reduce surprise charges. Titles use the selected model; task model
+variables are empty, so background tasks do not force a more expensive model.
+Administrative pages retain upstream role guards. Existing group permissions
+are additive: remove workspace/feature grants and old default-model assignments
+from prospect/customer groups; env defaults do not revoke an explicit group grant.
+
+For a fresh database, perform the first OAuth sign-in with the designated
+administrator before admitting prospects. Upstream automatically promotes the
+first/sole OAuth user even with role management enabled; the env blocks do not
+change that bootstrap behavior. Verify subsequent normal users retain `user`.
+
+`ENABLE_COMMUNITY_SHARING=false` hides community imports/sharing/reviews and now
+also the About social links and translation solicitation. With
+`ENABLE_VERSION_UPDATE_CHECK=false`, update network checks, release links,
+automatic changelog display, its modal and its settings controls are disabled,
+including for existing saved `showChangelog=true`. About keeps upstream copyright,
+license and third-party attribution; upstream LICENSE files are unchanged.
+
+### Assets and regeneration
+
+```sh
+uv pip install --python .venv/bin/python -r scripts/snowcrash/requirements.txt
+.venv/bin/python scripts/snowcrash/generate-assets.py
+.venv/bin/python scripts/snowcrash/generate-assets.py --check
 ```
 
-For a fresh/unpersisted configuration the connection defaults can also be
-provided as:
+The generator uses the checked-in source SVG, pinned CairoSVG/Pillow versions
+and no network at generation time. It synchronizes `static/static/` and
+`backend/open_webui/static/`, plus the root favicon and static manifest. Backend
+startup copies the built frontend static assets, so edit the frontend source
+and rebuild; a backend-only icon replacement would be overwritten.
 
-```dotenv
-OPENAI_API_CONFIGS={"0":{"enable":true,"auth_type":"system_oauth","model_ids":[],"headers":{},"forward_cookies":false,"model_catalog_scope":"user"}}
-```
+Assets: `snowcrash-logo.svg` (original), `favicon.svg` (square derived tile),
+`favicon.png` (64), `favicon-96x96.png`, `apple-touch-icon.png` (180),
+`web-app-manifest-{192x192,512x512}.png`, `logo.png` (500),
+`splash.png` / `splash-dark.png` (192), `favicon.ico` (16/32/48/64),
+`custom.css`, `site.webmanifest`, `static/favicon.png` and `static/manifest.json`.
+All binaries are small icons; no large brand image or generated build is added.
+The existing external-manifest setting points to
+`http://127.0.0.1:8080/static/site.webmanifest` so the runtime `/manifest.json`
+uses the SnowCrash name/icons/colors. Adjust its loopback port if the backend
+listens elsewhere. No public URL fetch is needed for the brand assets.
 
-Inspect `/openai/config` as an administrator after applying configuration.
-Existing installations must reconcile the persisted `openai.api_configs` row;
-changing environment variables alone may not replace it. Remove stale shared
-keys and Authorization headers. Keep `model_ids` empty even though scoped
-discovery ignores manual IDs. No SC or Keycloak changes are included here.
+Source changes kept limited to:
+
+- `backend/open_webui/env.py`: use the configured `WEBUI_NAME` verbatim rather
+  than appending an upstream suffix. Its default remains Open WebUI.
+- `src/app.html` and `src/lib/constants.ts`: SnowCrash initial page title/name
+  and navy dark-theme browser chrome (also in personal General settings).
+- `src/routes/auth/+page.svelte`: OIDC button label and a stable styling ID;
+  its provider name and availability still come from config. Disabled local
+  forms also stay hidden for `?form=` and initial onboarding.
+- `src/lib/components/chat/Chat.svelte`: apply the configured default only when
+  initializing a new scoped chat, only if advertised by SC; refresh/revocation
+  selection clearing stays unchanged.
+- `src/routes/(app)/+layout.svelte`, personal/admin General, About,
+  InterfaceSettings and Sidebar/UserMenu: extend the existing update/community
+  flags to the hardcoded changelog and marketing entry points.
+
+## UI upgrade verification (2026-10-19)
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend .venv/bin/python -m pytest
+  -p no:cacheprovider -q backend/tests`: **46 passed**.
+- `npm run test:frontend -- --run`: **14 passed** across three test files.
+- `NODE_OPTIONS=--max-old-space-size=12288 npx vite build`: production site
+  compiled with Svelte warnings. A first attempt with the default 4 GB heap hit
+  Node's memory limit; use the larger heap for this repository.
+- Targeted Prettier, Ruff formatting/Pyflakes and `git diff --check` passed.
+- `generate-assets.py --check` passed; PNG dimensions and sizes verified
+  (largest binary about 21 KB). Both env files use recognized source settings,
+  empty discovered `model_ids` and `quorum:auto`, with no retired IDs.
+- Local Chromium preview uses a fixture `/api/config`, not a live identity
+  provider. The production login renders the SnowCrash title, one branded SSO
+  button and no local login/signup inputs on desktop light and mobile dark
+  previews, including `?form=signin`. Live Keycloak email-link/password
+  flows, SC identity/budget accounting and deployment remain integration checks.
+
+The UI verification reused local `node_modules` and `.venv`. CairoSVG/Pillow
+and a missing httpx test dependency were installed only in the ignored `.venv`;
+application dependency manifests and lockfiles were not changed. Verification
+logs/screenshots are local ignored files under `.cache/snowcrash/` and
+`.snowcrash-build.log`.
 
 ## Validation
 

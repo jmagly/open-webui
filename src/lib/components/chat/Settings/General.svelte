@@ -155,7 +155,7 @@
 		if (themeToApply === 'dark' && !_theme.includes('oled')) {
 			document.documentElement.style.setProperty('--color-gray-800', '#333');
 			document.documentElement.style.setProperty('--color-gray-850', '#262626');
-			document.documentElement.style.setProperty('--color-gray-900', '#171717');
+			document.documentElement.style.setProperty('--color-gray-900', '#0F1729');
 			document.documentElement.style.setProperty('--color-gray-950', '#0d0d0d');
 		}
 
@@ -178,13 +178,13 @@
 					? 'dark'
 					: 'light';
 				console.log('Setting system meta theme color: ' + systemTheme);
-				metaThemeColor.setAttribute('content', systemTheme === 'light' ? '#ffffff' : '#171717');
+				metaThemeColor.setAttribute('content', systemTheme === 'light' ? '#ffffff' : '#0F1729');
 			} else {
 				console.log('Setting meta theme color: ' + _theme);
 				metaThemeColor.setAttribute(
 					'content',
 					_theme === 'dark'
-						? '#171717'
+						? '#0F1729'
 						: _theme === 'oled-dark'
 							? '#000000'
 							: _theme === 'her'
@@ -263,7 +263,7 @@
 					{/each}
 				</SettingsSelect>
 			</UserSettingRow>
-			{#if $i18n.language === 'en-US' && !($config?.license_metadata ?? false)}
+			{#if $config?.features?.enable_community_sharing && $i18n.language === 'en-US' && !($config?.license_metadata ?? false)}
 				<div class="-mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
 					{$i18n.t("Couldn't find your language?")}
 					<a

@@ -703,7 +703,7 @@
 		</p>
 	</div>
 
-	{#if isSettingsAdmin({ user: $user, config: $config })}
+	{#if isSettingsAdmin( { user: $user, config: $config } ) && $config?.features?.enable_version_update_check}
 		<div>
 			<div class={settingRowClass}>
 				<div id="toast-notifications-label" class={settingLabelClass}>

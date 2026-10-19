@@ -199,7 +199,7 @@
 			return;
 		}
 		if (!logout) await oauthCallbackHandler();
-		form = $page.url.searchParams.get('form');
+		form = $config?.features?.enable_login_form ? $page.url.searchParams.get('form') : null;
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
 		// deployment is unambiguously SSO-only (single provider, no login form,
@@ -227,7 +227,7 @@
 		if (($config?.features?.auth_trusted_header ?? false) || $config?.features?.auth === false) {
 			await signInHandler();
 		} else {
-			onboarding = $config?.onboarding ?? false;
+			onboarding = ($config?.onboarding ?? false) && $config?.features?.enable_login_form;
 		}
 	});
 </script>
@@ -596,6 +596,7 @@
 									{/if}
 									{#if $config?.oauth?.providers?.oidc}
 										<button
+											id="oidc-login-button"
 											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5"
 											on:click={() => {
 												window.location.href = `${WEBUI_BASE_URL}/oauth/oidc/login`;
@@ -618,7 +619,7 @@
 											</svg>
 
 											<span
-												>{$i18n.t('Continue with {{provider}}', {
+												>{$i18n.t('Sign in with {{provider}}', {
 													provider: $config?.oauth?.providers?.oidc ?? 'SSO'
 												})}</span
 											>

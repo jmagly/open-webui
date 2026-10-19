@@ -2668,7 +2668,11 @@
 			.filter((m) => !(m?.info?.meta?.hidden ?? false))
 			.map((m) => m.id);
 
-		const defaultModels = normalizeSelectedModels();
+		// A new scoped chat may use an explicitly configured, advertised default.
+		// Later catalog refreshes still clear revoked selections without fallback.
+		const defaultModels = normalizeSelectedModels(
+			$userModelCatalog ? ($config?.default_models?.split(',') ?? []) : []
+		);
 
 		const openModelSelectorWithSearch = async (modelId: string) => {
 			const modelSelectorButton = document.getElementById('model-selector-model-button');
