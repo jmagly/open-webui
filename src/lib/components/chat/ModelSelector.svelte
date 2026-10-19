@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { models, pinnedModels, settings, user } from '$lib/stores';
-	import { getContext } from 'svelte';
+	import { getContext, onMount } from 'svelte';
+	import { userModelCatalog, modelCatalogErrors } from '$lib/stores/modelCatalog';
+	import { refreshUserModelCatalog } from '$lib/apis';
+	import { retainCatalogSelection, watchModelCatalog } from '$lib/utils/modelCatalog';
 	import { toast } from 'svelte-sonner';
 	import Selector from './ModelSelector/Selector.svelte';
 
@@ -20,6 +23,14 @@
 
 	let compareModels = selectedModels.length > 1;
 	let selector;
+	let selectorOpen = false;
+
+	const refreshCatalog = async () => {
+		await refreshUserModelCatalog();
+	};
+
+	onMount(() => watchModelCatalog(refreshCatalog, () => selectorOpen));
+	$: if (selectorOpen && $userModelCatalog) refreshCatalog();
 
 	export const open = () => selector?.open();
 
@@ -45,10 +56,8 @@
 		await updateUserSettings(localStorage.token, { ui: { pinnedModels: $settings.pinnedModels } });
 	};
 
-	$: if (selectedModels.length > 0 && $models.length > 0) {
-		const _selectedModels = selectedModels.map((model) =>
-			$models.map((m) => m.id).includes(model) ? model : ''
-		);
+	$: if (selectedModels.length > 0 && ($models.length > 0 || $userModelCatalog)) {
+		const _selectedModels = retainCatalogSelection(selectedModels, $models);
 
 		if (!equal(_selectedModels, selectedModels)) {
 			selectedModels = _selectedModels;
@@ -61,11 +70,17 @@
 </script>
 
 <div class="flex min-w-0 max-w-full flex-col items-start">
+	{#if $userModelCatalog && $modelCatalogErrors.length}
+		<div role="alert" class="text-sm text-red-600 dark:text-red-400">
+			{$modelCatalogErrors.join(' ')}
+		</div>
+	{/if}
 	<div class="flex min-w-0 max-w-full">
 		<div class="min-w-0 max-w-full overflow-hidden">
 			<div class="min-w-0 max-w-full">
 				<Selector
 					bind:this={selector}
+					bind:show={selectorOpen}
 					id="model"
 					placeholder={$i18n.t('Select a model')}
 					items={$models.map((model) => ({

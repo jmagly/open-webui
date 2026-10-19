@@ -37,6 +37,7 @@ from open_webui.models.messages import MessageForm
 from open_webui.models.users import Users
 from open_webui.utils.auth import create_token
 from open_webui.utils.misc import parse_duration
+from open_webui.utils.model_catalog import get_request_models
 from open_webui.utils.models import get_all_models
 from open_webui.utils.recurrence import (
     _resolve_tz,
@@ -135,6 +136,7 @@ async def scheduler_worker_loop(app) -> None:
 def _build_request(
     app,
     token: Optional[str] = None,
+    user=None,
 ) -> Request:
     """Build a minimal ASGI Request for chat_completion.
 
@@ -160,12 +162,14 @@ def _build_request(
     request = Request(scope)
     # Ensure request.state is initialized with required attributes
     request.state.token = HTTPAuthorizationCredentials(scheme='Bearer', credentials=token) if token else None
+    if token and user is not None:
+        request.state.user = user
     request.state.enable_api_keys = False
     return request
 
 
-async def _resolve_model_defaults(app, model_id: str) -> dict:
-    models = getattr(app.state, 'MODELS', {})
+async def _resolve_model_defaults(request, user, model_id: str) -> dict:
+    models = await get_request_models(request, user)
     model = models.get(model_id, {})
     meta = model.get('info', {}).get('meta', {})
 
@@ -268,8 +272,8 @@ async def _execute_channel_automation(
     ):
         raise ValueError('Owner no longer permitted to use channels')
 
-    model = getattr(app.state, 'MODELS', {}).get(model_id, {})
-    request = _build_request(app, token=token)
+    request = _build_request(app, token=token, user=user)
+    model = (await get_request_models(request, user)).get(model_id, {})
 
     from open_webui.routers.channels import new_message_handler
 
@@ -308,7 +312,7 @@ async def _execute_channel_automation(
         )
 
     form_data = {
-        **await _resolve_model_defaults(app, model_id),
+        **await _resolve_model_defaults(request, user, model_id),
         'model': model_id,
         'messages': [
             {
@@ -404,8 +408,9 @@ async def execute_automation(app, automation: AutomationModel) -> None:
             expires_delta=expires_delta or timedelta(hours=1),
         )
 
-        if not app.state.MODELS:
-            await get_all_models(_build_request(app, token=token), user=user)
+        request = _build_request(app, token=token, user=user)
+        if not (await get_request_models(request, user)):
+            await get_all_models(request, user=user)
 
         target = automation.data.get('target') or {}
         if target.get('type') == 'channel':
@@ -489,7 +494,7 @@ async def execute_automation(app, automation: AutomationModel) -> None:
 
         # Build the same payload the frontend sends to /api/chat/completions
         form_data = {
-            **await _resolve_model_defaults(app, model_id),
+            **await _resolve_model_defaults(request, user, model_id),
             'model': model_id,
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': True,
@@ -519,7 +524,6 @@ async def execute_automation(app, automation: AutomationModel) -> None:
 
         # Call the full chat completion pipeline (same as POST /api/chat/completions).
         # The handler reference is stored on app.state to avoid circular imports.
-        request = _build_request(app, token=token)
         await app.state.CHAT_COMPLETION_HANDLER(request, form_data, user=user)
 
         reply = await Chats.get_message_by_id_and_message_id(chat.id, assistant_msg_id)

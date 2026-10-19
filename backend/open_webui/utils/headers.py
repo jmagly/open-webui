@@ -5,7 +5,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 import jwt
-from fastapi import Request
+from fastapi import HTTPException, Request
 from open_webui.env import (
     ENABLE_FORWARD_USER_INFO_HEADERS,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
@@ -208,18 +208,29 @@ async def get_headers_and_cookies(
     elif auth_type == 'session':
         token = request.state.token.credentials
     elif auth_type == 'system_oauth':
-        oauth_token = None
-        try:
-            if request.cookies.get('oauth_session_id', None):
-                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
-                    user.id,
-                    request.cookies.get('oauth_session_id', None),
-                )
-        except Exception as e:
-            log.error(f'Error getting OAuth token: {e}')
+        from open_webui.utils.oauth import get_system_oauth_token
 
-        if oauth_token:
-            token = f'{oauth_token.get("access_token", "")}'
+        scoped_catalog = config.get('model_catalog_scope') == 'user'
+        oauth_token = None
+        authenticated_user = getattr(request.state, 'user', None)
+        if scoped_catalog and authenticated_user and (user is None or authenticated_user.id != user.id):
+            raise HTTPException(status_code=403, detail='OAuth user mismatch')
+        try:
+            if user and request.cookies.get('oauth_session_id'):
+                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                    user.id, request.cookies['oauth_session_id']
+                )
+            elif scoped_catalog and user and authenticated_user and authenticated_user.id == user.id:
+                # Cookie-less tasks may only retrieve their authenticated owner's session.
+                oauth_token = await get_system_oauth_token(request, user)
+        except Exception:
+            log.warning('Unable to retrieve system OAuth access token')
+
+        token = (oauth_token or {}).get('access_token')
+        if not scoped_catalog:
+            token = f'{oauth_token.get("access_token", "")}' if oauth_token else None
+        elif not isinstance(token, str) or not token.strip():
+            raise HTTPException(status_code=401, detail='OAuth access token unavailable. Please sign in again.')
 
     elif auth_type in ('azure_ad', 'microsoft_entra_id'):
         token = get_microsoft_entra_id_access_token()
@@ -230,6 +241,11 @@ async def get_headers_and_cookies(
     if config.get('headers') and isinstance(config.get('headers'), dict):
         custom_headers = await get_custom_headers(config.get('headers'), user, metadata, request=request)
         headers.update(custom_headers)
+
+    if auth_type == 'system_oauth' and config.get('model_catalog_scope') == 'user':
+        # A configured header must never replace the authenticated user's token.
+        headers = {key: value for key, value in headers.items() if key.lower() != 'authorization'}
+        headers['Authorization'] = f'Bearer {token}'
 
     return headers, cookies
 

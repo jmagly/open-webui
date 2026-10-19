@@ -232,7 +232,7 @@
 		// remove trailing slash from url
 		url = url.replace(/\/$/, '');
 
-		const connection = {
+		const updatedConnection = {
 			url,
 			key,
 			config: {
@@ -240,6 +240,9 @@
 				tags: tags,
 				prefix_id: prefixId,
 				model_ids: modelIds,
+				...(connection?.config?.model_catalog_scope
+					? { model_catalog_scope: connection.config.model_catalog_scope }
+					: {}),
 				connection_type: connectionType,
 				auth_type,
 				...(!direct && !ollama ? { forward_cookies: forwardCookies } : {}),
@@ -252,7 +255,7 @@
 			}
 		};
 
-		await onSubmit(connection);
+		await onSubmit(updatedConnection);
 
 		loading = false;
 		show = false;

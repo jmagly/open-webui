@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 from open_webui.internal.db import get_async_db
 from open_webui.models.chat_messages import ChatMessages
+from open_webui.models.auths import Auths
 from open_webui.models.chats import Chat, ChatForm, Chats
 from open_webui.models.users import UserModel, Users
 from open_webui.tasks import has_active_tasks
@@ -265,6 +266,11 @@ async def execute_due_timer(app, timer_id: str, claim_id: str | None = None) -> 
             await _set_timer_state(timer_id, 'error', timer_error='owner no longer permitted to run timers')
             return
 
+        auth = await Auths.get_auth_by_id(user.id)
+        if auth is None or not auth.active:
+            await _set_timer_state(timer_id, 'error', timer_error='timer owner is no longer active')
+            return
+
         run = meta.get('run') or {}
         model_id = run.get('model_id') or meta.get('timer_model_id')
         if not model_id:
@@ -421,6 +427,7 @@ async def execute_due_timer(app, timer_id: str, claim_id: str | None = None) -> 
             }
         )
         request.state.token = None
+        request.state.user = user
         request.state.enable_api_keys = False
         request.state.chat_context = chat_context
         try:

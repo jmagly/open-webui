@@ -20,6 +20,7 @@ from open_webui.routers import ollama, openai
 from open_webui.socket.utils import RedisDict
 from open_webui.utils.access_control import has_access, has_base_model_access
 from open_webui.utils.chat_variables import get_chat_variables_schema
+from open_webui.utils.model_catalog import get_user_model_catalog
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.plugin import (
     get_function_module_from_cache,
@@ -80,7 +81,8 @@ async def get_all_base_models(request: Request, user: UserModel = None):
     config = await Config.get_many('openai.enable', 'ollama.enable')
     openai_task = fetch_openai_models(request, user) if config.get('openai.enable') else asyncio.sleep(0, result=[])
     ollama_task = fetch_ollama_models(request, user) if config.get('ollama.enable') else asyncio.sleep(0, result=[])
-    function_task = get_function_models(request)
+    snapshot = await get_user_model_catalog(request, user)
+    function_task = get_function_models(request) if snapshot is None else asyncio.sleep(0, result=[])
 
     openai_models, ollama_models, function_models = await asyncio.gather(openai_task, ollama_task, function_task)
 
@@ -88,13 +90,16 @@ async def get_all_base_models(request: Request, user: UserModel = None):
 
 
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is not None and hasattr(request.state, 'catalog_models'):
+        return list(request.state.catalog_models.values())
     config = await Config.get_many(
         'models.base_models_cache',
         'evaluation.arena.enable',
         'evaluation.arena.models',
         'models.default_metadata',
     )
-    if refresh:
+    if refresh and snapshot is None:
         await openai.get_all_models.cache.clear()
         await ollama.get_all_models.cache.clear()
         redis = getattr(request.app.state, 'redis', None)
@@ -103,7 +108,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         request.app.state.BASE_MODELS = []
 
     redis = getattr(request.app.state, 'redis', None)
-    use_cache = config.get('models.base_models_cache') and not refresh
+    use_cache = snapshot is None and config.get('models.base_models_cache') and not refresh
     base_models = None
 
     if use_cache and redis is not None:
@@ -119,7 +124,9 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
     if base_models is None:
         base_models = await get_all_base_models(request, user=user)
-        if base_models:
+        if snapshot is not None:
+            pass  # Empty is authoritative; never read or write a shared catalog.
+        elif base_models:
             request.app.state.BASE_MODELS = base_models
             if config.get('models.base_models_cache') and redis is not None:
                 await redis.set(BASE_MODELS_CACHE_KEY, JSONCodec.dumps(base_models))
@@ -127,10 +134,13 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             base_models = request.app.state.BASE_MODELS
 
     # deep copy the base models to avoid modifying the original list
-    models = [model.copy() for model in base_models]
+    models = [model.copy() for model in base_models if model.get('model_catalog_scope') != 'user']
 
     # If there are no models, return an empty list
     if len(models) == 0:
+        if snapshot is not None:
+            request.state.catalog_models = dict(snapshot['models'])
+            return list(request.state.catalog_models.values())
         return []
 
     # Add arena models
@@ -238,6 +248,8 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                     models = [m for m in models if m is not model]
 
         elif custom_model.is_active:
+            if snapshot is not None and custom_model.base_model_id not in base_model_lookup:
+                continue
             if custom_model.id in existing_ids:
                 continue
 
@@ -470,6 +482,13 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
     log.debug('get_all_models() returned %s models', len(models))
 
+    if snapshot is not None:
+        request.state.catalog_models = {
+            **{model['id']: model for model in models},
+            **snapshot['models'],
+        }
+        return list(request.state.catalog_models.values())
+
     models_dict = {}
     for model in models:
         model = model.copy()
@@ -490,7 +509,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
     return models
 
 
-async def check_model_access(user, model, model_info=None, db=None):
+async def check_model_access(user, model, model_info=None, db=None, request=None):
+    if model.get('model_catalog_scope') == 'user':
+        snapshot = await get_user_model_catalog(request, user) if request is not None else None
+        if snapshot is None or model['id'] not in snapshot['models']:
+            raise Exception('Model not found')
+        return
     if model.get('arena'):
         meta = model.get('info', {}).get('meta', {})
         access_grants = meta.get('access_grants', [])
@@ -555,6 +579,11 @@ async def check_model_access(user, model, model_info=None, db=None):
 
 
 async def get_filtered_models(models, user, db=None):
+    # Scoped entries have already been authorized by authenticated discovery.
+    scoped_models = [model for model in models if model.get('model_catalog_scope') == 'user']
+    models = [model for model in models if model.get('model_catalog_scope') != 'user']
+    if not models:
+        return scoped_models
     # Filter out models that the user does not have access to
     if (
         user.role == 'user' or (user.role == 'admin' and not BYPASS_ADMIN_ACCESS_CONTROL)
@@ -608,6 +637,6 @@ async def get_filtered_models(models, user, db=None):
                 # only admins can see unconfigured models.
                 filtered_models.append(model)
 
-        return filtered_models
+        return filtered_models + scoped_models
     else:
-        return models
+        return models + scoped_models

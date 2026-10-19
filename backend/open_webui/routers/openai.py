@@ -43,6 +43,7 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import get_headers_and_cookies, include_user_info_headers
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import convert_logit_bias_input_to_json, get_provider_function
+from open_webui.utils.model_catalog import get_user_model_catalog, is_user_catalog_model, catalog_response
 from open_webui.utils.model_ids import strip_provider_model_prefix
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
@@ -376,24 +377,29 @@ async def get_anthropic_request_target(request: Request, form_data: dict, user: 
 
     payload = {**form_data}
     model_id = requested_model
-    model_info = await Models.get_model_by_id(model_id)
-    await check_model_access(user, model_info, BYPASS_MODEL_ACCESS_CONTROL)
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is not None and model_id not in snapshot['models']:
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.MODEL_NOT_FOUND())
+    scoped_model = snapshot is not None
+    model_info = None if scoped_model else await Models.get_model_by_id(model_id)
+    if not scoped_model:
+        await check_model_access(user, model_info, BYPASS_MODEL_ACCESS_CONTROL)
 
     if model_info and model_info.base_model_id:
         model_id = model_info.base_model_id
         payload['model'] = model_id
 
-    models = request.app.state.OPENAI_MODELS
+    models = await get_request_openai_models(request, user)
     if not models or model_id not in models:
         await get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
+        models = await get_request_openai_models(request, user)
 
     model = models.get(model_id)
     if not model or 'urlIdx' not in model:
         raise HTTPException(status_code=404, detail=ERROR_MESSAGES.MODEL_NOT_FOUND())
 
-    url, key, api_config = await get_openai_connection(model['urlIdx'])
-    prefix_id = api_config.get('prefix_id')
+    url, key, api_config = await get_request_connection(request, model['urlIdx'], user)
+    prefix_id = None if api_config.get('model_catalog_scope') == 'user' else api_config.get('prefix_id')
     payload['model'] = strip_provider_model_prefix(payload['model'], prefix_id)
 
     headers, cookies = await get_headers_and_cookies(request, url, key, api_config, user=user)
@@ -603,6 +609,9 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
     request_tasks = []
     for idx, url in enumerate(api_base_urls):
+        if idx in ((getattr(request.state, 'user_model_catalog', None) or {}).get('connections', {})):
+            request_tasks.append(asyncio.sleep(0, None))
+            continue
         if (str(idx) not in api_configs) and (url not in api_configs):  # Legacy support
             request_tasks.append(get_models_request(request, url, api_keys[idx], user=user))
         else:
@@ -614,7 +623,9 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             enable = api_config.get('enable', True)
             model_ids = api_config.get('model_ids', [])
 
-            if enable:
+            if api_config.get('model_catalog_scope') == 'user':
+                request_tasks.append(asyncio.sleep(0, None))
+            elif enable:
                 if len(model_ids) == 0:
                     request_tasks.append(get_models_request(request, url, api_keys[idx], user=user, config=api_config))
                 else:
@@ -699,6 +710,9 @@ async def get_filtered_models(models, user, db=None):
 
     filtered_models = []
     for model in models.get('data', []):
+        if model.get('model_catalog_scope') == 'user':
+            filtered_models.append(model)
+            continue
         model_info = model_infos.get(model['id'])
         if model_info:
             if user.id == model_info.user_id or model_info.id in accessible_model_ids:
@@ -712,7 +726,7 @@ async def get_filtered_models(models, user, db=None):
     # static key, so a `key=lambda` collapsed every caller to one shared entry.
     key_builder=lambda _func, request, user=None: f'openai_all_models_{user.id}' if user else 'openai_all_models',
 )
-async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
+async def _get_all_models(request: Request, user: UserModel) -> dict[str, list]:
     log.info('get_all_models()')
 
     enable_openai_api, api_base_urls, _, api_configs = await get_openai_runtime_config()
@@ -751,6 +765,7 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
 
                     if model_id and model_id not in models:
                         provider = model.get('provider', '')
+                        model.pop('model_catalog_scope', None)
                         merged = {
                             **model,
                             'name': model.get('name', model_id),
@@ -776,8 +791,42 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
     models = get_merged_models(map(extract_data, responses))
     log.debug('models: %s', models)
 
-    request.app.state.OPENAI_MODELS = models
+    if getattr(request.state, 'user_model_catalog', None) is None:
+        request.app.state.OPENAI_MODELS = models
     return {'data': list(models.values())}
+
+
+async def get_all_models(request: Request, user: UserModel) -> dict:
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is None:
+        return await _get_all_models(request, user=user)
+    if not hasattr(request.state, 'catalog_openai_models'):
+        # Ordinary connections retain their behavior; scoped connections never
+        # enter aiocache or the shared OPENAI_MODELS registry.
+        ordinary = await _get_all_models(request, user=user, cache_read=False, cache_write=False)
+        request.state.catalog_openai_models = {
+            **{model['id']: model for model in ordinary['data']},
+            **snapshot['models'],
+        }
+    return {'data': list(request.state.catalog_openai_models.values()), **catalog_response(request)}
+
+
+get_all_models.cache = _get_all_models.cache
+
+
+async def get_request_openai_models(request, user):
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is not None:
+        await get_all_models(request, user=user)
+        return request.state.catalog_openai_models
+    return request.app.state.OPENAI_MODELS
+
+
+async def get_request_connection(request, idx, user):
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is not None and idx in snapshot['connections']:
+        return snapshot['connections'][idx]
+    return await get_openai_connection(idx)
 
 
 @router.get('/models')
@@ -797,6 +846,12 @@ async def get_models(request: Request, url_idx: int | None = None, user=Depends(
         models = await get_all_models(request, user=user)
     else:
         url, key, api_config = await get_openai_connection(url_idx)
+        if api_config.get('model_catalog_scope') == 'user':
+            snapshot = await get_user_model_catalog(request, user)
+            return {
+                'data': [model for model in (snapshot or {}).get('models', {}).values() if model['urlIdx'] == url_idx],
+                **catalog_response(request),
+            }
 
         r = None
         async with aiohttp.ClientSession(
@@ -1437,7 +1492,11 @@ async def generate_chat_completion(
     # keep the model the client asked for when reached from /api/chat/completions
     if not hasattr(request.state, 'model_id'):
         request.state.model_id = model_id
-    model_info = await Models.get_model_by_id(model_id)
+    snapshot = await get_user_model_catalog(request, user)
+    if snapshot is not None and model_id not in snapshot['models']:
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.MODEL_NOT_FOUND())
+    scoped_model = snapshot is not None
+    model_info = None if scoped_model else await Models.get_model_by_id(model_id)
 
     # Check model info and override the payload
     if model_info:
@@ -1458,14 +1517,14 @@ async def generate_chat_completion(
                 payload = await apply_system_prompt_to_body(system, payload, metadata, user)
 
         await check_model_access(user, model_info, bypass_filter)
-    else:
+    elif not scoped_model:
         await check_model_access(user, None, bypass_filter)
 
     # Check if model is already in app state cache to avoid expensive get_all_models() call
-    models = request.app.state.OPENAI_MODELS
+    models = await get_request_openai_models(request, user)
     if not models or model_id not in models:
         await get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
+        models = await get_request_openai_models(request, user)
     model = models.get(model_id)
 
     if model:
@@ -1476,9 +1535,9 @@ async def generate_chat_completion(
             detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
         )
 
-    url, key, api_config = await get_openai_connection(idx)
+    url, key, api_config = await get_request_connection(request, idx, user)
 
-    prefix_id = api_config.get('prefix_id', None)
+    prefix_id = None if api_config.get('model_catalog_scope') == 'user' else api_config.get('prefix_id', None)
     payload['model'] = strip_provider_model_prefix(payload['model'], prefix_id)
 
     # Add user info to the payload if the model is a pipeline
@@ -1700,14 +1759,18 @@ async def embeddings(request: Request, form_data: dict, user):
     # Find correct backend url/key based on model
     model_id = form_data.get('model')
     # Check if model is already in app state cache to avoid expensive get_all_models() call
-    models = request.app.state.OPENAI_MODELS
+    models = await get_request_openai_models(request, user)
     if not models or model_id not in models:
         await get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
+        models = await get_request_openai_models(request, user)
     if model_id in models:
         idx = models[model_id]['urlIdx']
 
-    url, key, api_config = await get_openai_connection(idx)
+    if await get_user_model_catalog(request, user) is not None:
+        routing_models = await get_request_openai_models(request, user)
+        if model_id not in routing_models:
+            raise HTTPException(status_code=403, detail='Model is not in your current catalog')
+    url, key, api_config = await get_request_connection(request, idx, user)
 
     r = None
     streaming = False
@@ -1827,19 +1890,26 @@ async def responses(
     request.state.model_id = model_id
 
     # Enforce per-model access control
-    await check_model_access(user, await Models.get_model_by_id(model_id), BYPASS_MODEL_ACCESS_CONTROL)
+    if not await is_user_catalog_model(request, user, model_id):
+        await check_model_access(user, await Models.get_model_by_id(model_id), BYPASS_MODEL_ACCESS_CONTROL)
 
     if model_id:
-        models = request.app.state.OPENAI_MODELS
+        models = await get_request_openai_models(request, user)
         if not models or model_id not in models:
             await get_all_models(request, user=user)
-            models = request.app.state.OPENAI_MODELS
+            models = await get_request_openai_models(request, user)
         if model_id in models:
             idx = models[model_id]['urlIdx']
 
-    url, key, api_config = await get_openai_connection(idx)
+    if await get_user_model_catalog(request, user) is not None:
+        routing_models = await get_request_openai_models(request, user)
+        if model_id not in routing_models:
+            raise HTTPException(status_code=403, detail='Model is not in your current catalog')
+    url, key, api_config = await get_request_connection(request, idx, user)
 
-    payload['model'] = strip_provider_model_prefix(payload['model'], api_config.get('prefix_id'))
+    payload['model'] = strip_provider_model_prefix(
+        payload['model'], (None if api_config.get('model_catalog_scope') == 'user' else api_config.get('prefix_id'))
+    )
     body = JSONCodec.dumps(payload)
 
     r = None
@@ -1950,14 +2020,18 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
     model_id = payload.get('model') if isinstance(payload, dict) else None
     request.state.model_id = model_id
     if model_id:
-        models = request.app.state.OPENAI_MODELS
+        models = await get_request_openai_models(request, user)
         if not models or model_id not in models:
             await get_all_models(request, user=user)
-            models = request.app.state.OPENAI_MODELS
+            models = await get_request_openai_models(request, user)
         if model_id in models:
             idx = models[model_id]['urlIdx']
 
-    url, key, api_config = await get_openai_connection(idx)
+    if await get_user_model_catalog(request, user) is not None:
+        routing_models = await get_request_openai_models(request, user)
+        if model_id not in routing_models:
+            raise HTTPException(status_code=403, detail='Model is not in your current catalog')
+    url, key, api_config = await get_request_connection(request, idx, user)
     base_url = url
 
     r = None

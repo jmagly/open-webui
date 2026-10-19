@@ -47,6 +47,7 @@ from open_webui.utils.context_compaction import compact_chat_branch, get_chat_co
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_message_list
 from open_webui.utils.models import get_all_models
+from open_webui.utils.model_catalog import get_request_models
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1373,8 +1374,10 @@ async def compact_chat_by_id(
             detail='Wait for the current response to finish before compacting.',
         )
 
-    if not request.app.state.MODELS:
+    models = await get_request_models(request, user)
+    if not models:
         await get_all_models(request, user=user)
+        models = await get_request_models(request, user)
 
     history = (chat.chat or {}).get('history') or {}
     messages_map = await Chats.get_messages_map_by_chat_id(id)
@@ -1391,7 +1394,7 @@ async def compact_chat_by_id(
     if not model_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No model found for context compaction.')
 
-    result = await compact_chat_branch(request, user, chat, model_id, request.app.state.MODELS)
+    result = await compact_chat_branch(request, user, chat, model_id, models)
     result['context_usage'] = await get_chat_context_usage(chat, model_id)
     if result.get('compacted'):
         await publish_event(

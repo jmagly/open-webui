@@ -247,6 +247,12 @@ from open_webui.utils.chat_variables import (
 )
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.headers import get_headers_and_cookies
+from open_webui.utils.model_catalog import (
+    get_request_models,
+    get_user_model_catalog,
+    is_user_catalog_model,
+    catalog_response,
+)
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.json_response import apply_orjson_http_json
 from open_webui.utils.logger import start_logger
@@ -940,7 +946,7 @@ async def get_models(request: Request, refresh: bool = False, user=Depends(get_v
         model for model in all_models if not ('pipeline' in model and model['pipeline'].get('type', None) == 'filter')
     ]
 
-    # Chat requests resolve models by ID from request.app.state.MODELS, where
+    # Chat requests resolve models by ID from the effective request catalog, where
     # duplicate IDs collapse to the last model. Return the same effective list.
     models = list({model['id']: model for model in models}.values())
 
@@ -976,13 +982,13 @@ async def get_models(request: Request, refresh: bool = False, user=Depends(get_v
         log.debug(
             f'/api/models returned filtered models accessible to the user: {JSONCodec.dumps([model.get("id") for model in models])}'
         )
-    return {'data': models}
+    return {'data': models, **catalog_response(request)}
 
 
 @app.get('/api/models/base')
 async def get_base_models(request: Request, user=Depends(get_admin_user)):
     models = await get_all_base_models(request, user=user)
-    return {'data': models}
+    return {'data': models, **catalog_response(request)}
 
 
 class ModelUnloadForm(BaseModel):
@@ -1126,7 +1132,7 @@ async def embeddings(request: Request, form_data: dict, user=Depends(get_verifie
         dict: OpenAI-compatible embeddings response.
     """
     # Make sure models are loaded in app state
-    if not request.app.state.MODELS:
+    if not (await get_request_models(request, user)):
         await get_all_models(request, user=user)
     # Use generic dispatcher in utils.embeddings
     return await generate_embeddings(request, form_data, user)
@@ -1150,12 +1156,14 @@ async def chat_completion(
     form_data: dict,
     user=Depends(get_verified_user),
 ):
-    if not request.app.state.MODELS:
+    if not (await get_request_models(request, user)):
         await get_all_models(request, user=user)
 
     model_id = form_data.get('model', None)
     request.state.model_id = model_id
     model_item = form_data.pop('model_item', {})
+    if await get_user_model_catalog(request, user) is not None:
+        model_item = {}  # Scoped catalogs only route server-side models.
     tasks = form_data.pop('background_tasks', None)
 
     metadata = {}
@@ -1164,13 +1172,17 @@ async def chat_completion(
         fallback_model = None
         missing_base_model = False
         if not model_item.get('direct', False):
-            if model_id not in request.app.state.MODELS:
+            if model_id not in (await get_request_models(request, user)):
                 raise Exception('Model not found')
 
-            model = request.app.state.MODELS[model_id]
-            model_info = await Models.get_model_by_id(model_id)
+            model = (await get_request_models(request, user))[model_id]
+            model_info = (
+                None if await is_user_catalog_model(request, user, model_id) else await Models.get_model_by_id(model_id)
+            )
             missing_base_model = bool(
-                model_info and model_info.base_model_id and model_info.base_model_id not in request.app.state.MODELS
+                model_info
+                and model_info.base_model_id
+                and model_info.base_model_id not in (await get_request_models(request, user))
             )
 
             if missing_base_model and ENABLE_CUSTOM_MODEL_FALLBACK:
@@ -1183,7 +1195,7 @@ async def chat_completion(
                     None,
                 )
                 if fallback_model_id:
-                    fallback_model = request.app.state.MODELS.get(fallback_model_id)
+                    fallback_model = (await get_request_models(request, user)).get(fallback_model_id)
 
             # Check if user has access to the model
             if not BYPASS_MODEL_ACCESS_CONTROL and (user.role != 'admin' or not BYPASS_ADMIN_ACCESS_CONTROL):
@@ -1193,9 +1205,9 @@ async def chat_completion(
                         if fallback_model is not None
                         else model_info
                     )
-                    await check_model_access(user, model, model_info=access_model_info)
+                    await check_model_access(user, model, model_info=access_model_info, request=request)
                     if fallback_model is not None:
-                        await check_model_access(user, fallback_model)
+                        await check_model_access(user, fallback_model, request=request)
                 except Exception as e:
                     raise e
         else:
@@ -1279,6 +1291,11 @@ async def chat_completion(
         else:
             # Single-model fallback
             message_ids = [{'model_id': model_id, 'message_id': form_data.pop('id', None)}]
+
+        if await get_user_model_catalog(request, user) is not None:
+            models = await get_request_models(request, user)
+            if any(entry['model_id'] not in models for entry in message_ids):
+                raise HTTPException(status_code=403, detail='Model is not in your current catalog')
 
         user_message = form_data.pop('user_message', None) or form_data.pop('parent_message', None)
         chat_id = form_data.pop('chat_id', None) or ''
@@ -1654,6 +1671,8 @@ async def chat_completion(
                         if form_data['model'] == model_id
                         else await Models.get_model_by_id(form_data['model'])
                     )
+                    if await is_user_catalog_model(request, user, form_data['model']):
+                        target = None
                     controls = target.params.model_dump().get('model_controls', {}) if target else {}
                     form_data['params'] = apply_model_controls(
                         copy.deepcopy(form_data.get('params') or {}),
@@ -1851,7 +1870,7 @@ async def chat_completion(
             }
 
             # Resolve the model object for this specific model
-            resolved_model = request.app.state.MODELS.get(target_model_id, model)
+            resolved_model = (await get_request_models(request, user)).get(target_model_id, model)
 
             # Only the first model runs chat-level background tasks;
             # subsequent models only run follow-ups.
@@ -2071,18 +2090,20 @@ async def generate_messages(
         log.warning('Unable to count Anthropic input tokens for model %s', requested_model, exc_info=True)
 
     model_id = requested_model
-    model_info = await Models.get_model_by_id(model_id)
+    model_info = (
+        None if await is_user_catalog_model(request, user, model_id) else await Models.get_model_by_id(model_id)
+    )
     if model_info and model_info.base_model_id:
         model_id = model_info.base_model_id
 
     passthrough_params = []
-    models = request.app.state.OPENAI_MODELS
+    models = await openai.get_request_openai_models(request, user)
     if not models or model_id not in models:
         await openai.get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
+        models = await openai.get_request_openai_models(request, user)
     model = models.get(model_id)
     if model:
-        url, _, api_config = await openai.get_openai_connection(model['urlIdx'])
+        url, _, api_config = await openai.get_request_connection(request, model['urlIdx'], user)
         if is_anthropic_messages_passthrough(url, api_config):
             return await passthrough_anthropic_messages(request, form_data, user)
         passthrough_params = api_config.get('passthrough_params') or []
@@ -2138,6 +2159,8 @@ async def chat_completed(request: Request, form_data: dict, user=Depends(get_ver
 
     try:
         model_item = form_data.pop('model_item', {})
+        if await get_user_model_catalog(request, user) is not None:
+            model_item = {}  # Scoped catalogs only route server-side models.
 
         if model_item.get('direct', False):
             await _set_direct_model(request, model_item, user)
@@ -2156,6 +2179,8 @@ async def chat_action(request: Request, action_id: str, form_data: dict, user=De
 
     try:
         model_item = form_data.pop('model_item', {})
+        if await get_user_model_catalog(request, user) is not None:
+            model_item = {}  # Scoped catalogs only route server-side models.
 
         if model_item.get('direct', False):
             await _set_direct_model(request, model_item, user)

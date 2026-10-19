@@ -102,6 +102,7 @@ from open_webui.utils.filter import (
     get_filter_functions,
     process_filter_functions,
 )
+from open_webui.utils.model_catalog import get_request_models
 from open_webui.utils.json_codec import JSONCodec, dumps_bytes
 from open_webui.utils.memory import add_memory_context, review_memory_after_turn
 from open_webui.utils.misc import (
@@ -2036,7 +2037,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if arena_model_ids and arena_filter_mode == 'exclude':
             arena_model_ids = [
                 available_model['id']
-                for available_model in request.app.state.MODELS.values()
+                for available_model in (await get_request_models(request, user)).values()
                 if available_model.get('owned_by') != 'arena' and available_model['id'] not in arena_model_ids
             ]
 
@@ -2045,12 +2046,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         else:
             arena_model_ids = [
                 available_model['id']
-                for available_model in request.app.state.MODELS.values()
+                for available_model in (await get_request_models(request, user)).values()
                 if available_model.get('owned_by') != 'arena'
             ]
             selected_model_id = random.choice(arena_model_ids)
 
-        selected_model = request.app.state.MODELS.get(selected_model_id)
+        selected_model = (await get_request_models(request, user)).get(selected_model_id)
         if selected_model:
             model = selected_model
             form_data['model'] = selected_model_id
@@ -2148,7 +2149,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data.get('messages', []),
                 metadata,
                 form_data.get('model'),
-                request.app.state.MODELS,
+                (await get_request_models(request, user)),
                 chat_system_prompt,
             )
             if context_summary:
@@ -2213,7 +2214,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     task_model_id = get_task_model_id(
         form_data['model'],
@@ -3758,7 +3759,7 @@ async def outlet_filter_handler(ctx):
             await get_filter_functions(request, model, metadata.get('filter_ids', [])) if ENABLE_FUNCTIONS else []
         )
         model_id = model.get('id') if isinstance(model, dict) else model
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
         has_pipeline_outlet_filters = bool(
             (isinstance(model, dict) and 'pipeline' in model) or get_sorted_filters(model_id, models)
         )
@@ -5973,7 +5974,12 @@ async def streaming_chat_response_handler(response, ctx):
                                             metadata.get('base_user_prompt') or user_message, [message]
                                         )
                                     messages, context_summary, compacted = await compact_messages_for_request(
-                                        request, user, messages, metadata, model_id, request.app.state.MODELS
+                                        request,
+                                        user,
+                                        messages,
+                                        metadata,
+                                        model_id,
+                                        (await get_request_models(request, user)),
                                     )
                                 finally:
                                     for message, content in user_messages:
@@ -6396,7 +6402,7 @@ async def streaming_chat_response_handler(response, ctx):
                         model_id = model.get('id') if isinstance(model, dict) else model
                         outlet_enabled = bool(
                             (isinstance(model, dict) and 'pipeline' in model)
-                            or get_sorted_filters(model_id, request.app.state.MODELS)
+                            or get_sorted_filters(model_id, (await get_request_models(request, user)))
                         )
                     except Exception:
                         outlet_enabled = True

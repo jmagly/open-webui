@@ -62,11 +62,15 @@ async def _build_request(source: Request, user_id: str, *, internal: bool) -> Re
     auth = await Auths.get_auth_by_id(user_id)
     if auth is None or not auth.active:
         raise ValueError('Subagent owner is no longer active')
+    user = await Users.get_user_by_id(user_id)
+    if not user or user.role not in VERIFIED_USER_ROLES:
+        raise ValueError('Subagent owner is no longer permitted to run')
     token = create_token(
         data={'id': user_id, 'typ': 'subagent', 'session_stamp': auth.session_stamp},
         expires_delta=timedelta(hours=1),
     )
     request.state.token = HTTPAuthorizationCredentials(scheme='Bearer', credentials=token)
+    request.state.user = user
     request.state.enable_api_keys = False
     if internal:
         request.state.internal = True
@@ -273,7 +277,7 @@ async def process_pending_internal_messages(
 
         request = await _build_request(source_request, user.id, internal=False)
         request.state.chat_context = chat_context
-        await source_request.app.state.CHAT_COMPLETION_HANDLER(request, form_data, user=user)
+        await source_request.app.state.CHAT_COMPLETION_HANDLER(request, form_data, user=request.state.user)
 
 
 async def delegate(
@@ -493,7 +497,7 @@ async def delegate(
                 form_data['terminal_id'] = run['terminal_id']
             if run.get('tool_servers'):
                 form_data['tool_servers'] = run['tool_servers']
-            await request.app.state.CHAT_COMPLETION_HANDLER(child_request, form_data, user=user)
+            await request.app.state.CHAT_COMPLETION_HANDLER(child_request, form_data, user=child_request.state.user)
             message = await Chats.get_message_by_id_and_message_id(chat_id, assistant_message_id)
             if not message:
                 return {

@@ -45,6 +45,7 @@ API_CONFIG_FIELDS = (
     'prefix_id',
     'tags',
     'model_ids',
+    'model_catalog_scope',
     'connection_type',
     'provider',
     'auth_type',

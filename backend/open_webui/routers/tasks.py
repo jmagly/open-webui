@@ -18,6 +18,7 @@ from open_webui.config import (
 )
 from open_webui.constants import ERROR_MESSAGES, TASKS
 from open_webui.models.config import Config
+from open_webui.utils.model_catalog import get_request_models
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.chat import generate_chat_completion
@@ -152,11 +153,11 @@ async def generate_title(request: Request, form_data: dict, user=Depends(get_ver
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if not model_id:
@@ -225,11 +226,11 @@ async def generate_follow_ups(request: Request, form_data: dict, user=Depends(ge
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -292,11 +293,11 @@ async def generate_chat_tags(request: Request, form_data: dict, user=Depends(get
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -351,11 +352,11 @@ async def generate_chat_tags(request: Request, form_data: dict, user=Depends(get
 async def generate_image_prompt(request: Request, form_data: dict, user=Depends(get_verified_user)):
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -428,11 +429,11 @@ async def generate_queries(request: Request, form_data: dict, user=Depends(get_v
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -504,11 +505,11 @@ async def generate_autocompletion(request: Request, form_data: dict, user=Depend
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -563,11 +564,11 @@ async def generate_autocompletion(request: Request, form_data: dict, user=Depend
 async def generate_emoji(request: Request, form_data: dict, user=Depends(get_verified_user)):
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     if model_id not in models:
@@ -617,11 +618,11 @@ async def generate_emoji(request: Request, form_data: dict, user=Depends(get_ver
 async def generate_moa_response(request: Request, form_data: dict, user=Depends(get_verified_user)):
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
 

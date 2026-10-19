@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
-import { config } from '$lib/stores';
+import { config, models as modelsStore } from '$lib/stores';
+import { userModelCatalog, modelCatalogErrors } from '$lib/stores/modelCatalog';
 import { WEBUI_BASE_URL } from '$lib/constants';
 import { convertOpenApiToToolPayload, resolveSchema } from '$lib/utils';
 import { normalizeTags } from '$lib/utils/tags';
@@ -56,10 +57,21 @@ export const getModels = async (
 		});
 
 	if (error) {
+		if (get(userModelCatalog)) {
+			modelsStore.set([]);
+			modelCatalogErrors.set([
+				'Unable to refresh your model catalog. Please sign in again or retry.'
+			]);
+		}
 		throw error;
 	}
 
+	if (!base) {
+		userModelCatalog.set(res?.model_catalog_scope === 'user');
+		modelCatalogErrors.set(res?.errors ?? []);
+	}
 	let models = res?.data ?? [];
+	if (res?.model_catalog_scope === 'user') return models;
 
 	if (connections && !base) {
 		let localModels = [];
@@ -180,6 +192,27 @@ export const getModels = async (
 	}
 
 	return models;
+};
+
+let catalogRefresh: Promise<boolean> | null = null;
+
+export const refreshUserModelCatalog = async (): Promise<boolean> => {
+	if (!get(userModelCatalog)) return true;
+	// Focus, selector and send can refresh concurrently. Apply a single response.
+	if (!catalogRefresh) {
+		catalogRefresh = (async () => {
+			try {
+				modelsStore.set(await getModels(localStorage.token, null, false, true));
+				return true;
+			} catch {
+				modelsStore.set([]);
+				return false;
+			} finally {
+				catalogRefresh = null;
+			}
+		})();
+	}
+	return catalogRefresh;
 };
 
 export const unloadModel = async (token: string, model: string) => {

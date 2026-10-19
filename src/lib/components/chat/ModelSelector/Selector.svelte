@@ -85,7 +85,7 @@
 
 	export let pinModelHandler: (modelId: string) => void = () => {};
 
-	let show = false;
+	export let show = false;
 	let triggerElement: HTMLElement | null = null;
 	let contentElement: HTMLElement | null = null;
 	const portal = (node: HTMLElement) => {

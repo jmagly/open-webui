@@ -2,6 +2,9 @@
 	import type { TerminalContext } from '$lib/types';
 	import { v4 as uuidv4 } from 'uuid';
 	import { toast } from 'svelte-sonner';
+	import { userModelCatalog, modelCatalogErrors } from '$lib/stores/modelCatalog';
+	import { refreshUserModelCatalog } from '$lib/apis';
+	import { retainCatalogSelection } from '$lib/utils/modelCatalog';
 
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { fade } from 'svelte/transition';
@@ -223,6 +226,15 @@
 
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds: string[] = [];
+	$: if (
+		$userModelCatalog &&
+		atSelectedModel &&
+		!$models.some((model) => model.id === atSelectedModel?.id)
+	) {
+		atSelectedModel = undefined;
+		selectedModels = [''];
+	}
+
 	$: if (atSelectedModel !== undefined) {
 		selectedModelIds = [atSelectedModel.id];
 	} else {
@@ -232,6 +244,8 @@
 	let contextUsage = null;
 
 	const normalizeSelectedModels = (modelIds: string[] = []) => {
+		if ($userModelCatalog)
+			return retainCatalogSelection(modelIds.length ? modelIds : [''], $models);
 		const selected = resolveDefaultModelIds(
 			$models,
 			modelIds,
@@ -246,6 +260,7 @@
 			$page.url.searchParams.get('models') || $page.url.searchParams.get('model');
 
 		if (
+			!$userModelCatalog &&
 			chatIdProp === '' &&
 			$models.length > 0 &&
 			!selectedModels?.some((modelId) => modelId) &&
@@ -2720,7 +2735,10 @@
 		}
 
 		// Ensure at least one model is selected
-		if (selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === '')) {
+		if (
+			!$userModelCatalog &&
+			(selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === ''))
+		) {
 			if (availableModels.length > 0) {
 				if (defaultModels && defaultModels.length > 0) {
 					selectedModels = defaultModels.filter((modelId) => availableModels.includes(modelId));
@@ -3769,6 +3787,7 @@
 		}: { _raw?: boolean; bridge?: { userMessageId: string; modelId: string } | null } = {}
 	): Promise<BridgeSubmission> => {
 		emitTyping(false);
+		if ($userModelCatalog) await refreshUserModelCatalog();
 		if (bridgeRequest && (selectedModelIds.length !== 1 || !bridgeRequest.modelId))
 			return { status: 'rejected' };
 
@@ -4155,6 +4174,22 @@
 			continueResponse?: boolean;
 		} = {}
 	) => {
+		if ($userModelCatalog) {
+			await refreshUserModelCatalog();
+			selectedModels = retainCatalogSelection(selectedModels, $models);
+			const requestedModels = messageIdsList?.map((entry) => entry.model_id) ?? [model.id];
+			if (requestedModels.some((id) => !$models.some((item) => item.id === id))) {
+				if (atSelectedModel?.id === model.id) atSelectedModel = undefined;
+				const error =
+					$modelCatalogErrors.join(' ') ||
+					'This model is no longer available. Choose a model to continue.';
+				toast.error(error);
+				const message = _history.messages[responseMessageId];
+				message.done = true;
+				message.error = { content: error };
+				return null;
+			}
+		}
 		const responseMessage = _history.messages[responseMessageId];
 		const userMessage = _history.messages[responseMessage.parentId];
 		const filesystemAttachment = userMessage?.files?.find(

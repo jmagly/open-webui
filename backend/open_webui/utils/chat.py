@@ -31,6 +31,7 @@ from open_webui.utils.filter import (
     get_filter_functions,
     process_filter_functions,
 )
+from open_webui.utils.model_catalog import get_request_models
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.models import check_model_access, get_all_models
 from open_webui.utils.payload import apply_system_prompt_to_body, convert_payload_openai_to_ollama
@@ -178,12 +179,12 @@ async def generate_chat_completion(
         # dict(...items()) is one HGETALL on a Redis-backed pool; ``{**pool}``
         # would issue HKEYS plus one HGET per model.
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
         log.debug('direct connection to model: %s', request.state.model['id'])
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     model_id = form_data['model']
     # Single lookup — membership check plus getitem would be two Redis
@@ -198,7 +199,7 @@ async def generate_chat_completion(
         # Check if user has access to the model
         if not bypass_filter and user.role == 'user':
             try:
-                await check_model_access(user, model)
+                await check_model_access(user, model, request=request)
             except Exception as e:
                 raise e
 
@@ -220,7 +221,7 @@ async def generate_chat_completion(
             if model_ids and filter_mode == 'exclude':
                 model_ids = [
                     available_model['id']
-                    for available_model in list(request.app.state.MODELS.values())
+                    for available_model in list((await get_request_models(request, user)).values())
                     if available_model.get('owned_by') != 'arena' and available_model['id'] not in model_ids
                 ]
 
@@ -229,7 +230,7 @@ async def generate_chat_completion(
             else:
                 model_ids = [
                     available_model['id']
-                    for available_model in list(request.app.state.MODELS.values())
+                    for available_model in list((await get_request_models(request, user)).values())
                     if available_model.get('owned_by') != 'arena'
                 ]
                 selected_model_id = random.choice(model_ids)
@@ -238,9 +239,9 @@ async def generate_chat_completion(
 
             # bypass_filter recursion below skips the line-200 check; gate the resolved model here.
             if not bypass_filter and user.role == 'user':
-                selected_model = request.app.state.MODELS.get(selected_model_id)
+                selected_model = (await get_request_models(request, user)).get(selected_model_id)
                 if selected_model:
-                    await check_model_access(user, selected_model)
+                    await check_model_access(user, selected_model, request=request)
 
         if selected_model_id:
             if form_data.get('stream') == True:
@@ -317,16 +318,16 @@ chat_completion = generate_chat_completion
 
 
 async def chat_completed(request: Request, form_data: dict, user: Any):
-    if not request.app.state.MODELS:
+    if not (await get_request_models(request, user)):
         await get_all_models(request, user=user)
 
     if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
         models = {
-            **dict(request.app.state.MODELS.items()),
+            **dict((await get_request_models(request, user)).items()),
             request.state.model['id']: request.state.model,
         }
     else:
-        models = request.app.state.MODELS
+        models = await get_request_models(request, user)
 
     data = form_data
 
